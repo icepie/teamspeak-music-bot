@@ -122,20 +122,15 @@ export interface BotConfig {
   /** Lower music volume while voice from another client is being received. */
   voiceDucking: VoiceDuckingConfig;
   idleTimeoutMinutes: number;
+  /** Play through the host speaker without connecting to TeamSpeak. */
+  localPlaybackEnabled: boolean;
   /** Enable uploading and playback of server-stored local audio files. */
   localAudioEnabled: boolean;
   /**
-   * Enable named save/load of queues (chat + web) AND auto-restore of the live
-   * queue across a restart. Admin-controlled; default false so nothing is
-   * persisted/restored until an operator opts in.
+   * Enable named save/load of queues AND auto-restore of the live queue.
    */
   savedQueuesEnabled: boolean;
-  /**
-   * When true, a single-song immediate !play (chat) / play-song (web) inserts
-   * after the current track and jumps to it instead of clearing the queue, so
-   * the rest of the queue survives and continues afterwards. Default false
-   * keeps today's clear-and-play behavior.
-   */
+  /** Keep the old queue when directly playing a single song. */
   playKeepsQueue: boolean;
   // Public base URL used when generating share links (e.g. the bot专属链接).
   // Leave empty to use the browser's current origin. Example:
@@ -189,6 +184,7 @@ export function getDefaultConfig(): BotConfig {
       volumePercent: 30,
     },
     idleTimeoutMinutes: 0,
+    localPlaybackEnabled: false,
     localAudioEnabled: true,
     savedQueuesEnabled: false,
     playKeepsQueue: false,
@@ -388,13 +384,9 @@ export function loadConfig(path: string): BotConfig {
           (GATEABLE_PROVIDERS as readonly string[]).includes(p as string),
         )
       : defaults.enabledProviders;
-
-    // Strict-coerce the two feature flags exactly like spotify.enabled so a
-    // hand-edited / legacy / corrupt config.json can never silently enable
-    // them (`"yes"`, `1`, `null` → false; only a literal `true` enables).
+    const localPlaybackEnabled = partial.localPlaybackEnabled === true;
     const savedQueuesEnabled = partial.savedQueuesEnabled === true;
     const playKeepsQueue = partial.playKeepsQueue === true;
-
     // Voice ducking is opt-in and the retained-volume percentage is consumed
     // directly by the audio path. Only a plain-object block with correctly
     // typed, finite and in-range fields may override the safe defaults.
@@ -455,6 +447,7 @@ export function loadConfig(path: string): BotConfig {
       jellyfin,
       audioQuality,
       enabledProviders,
+      localPlaybackEnabled,
       savedQueuesEnabled,
       playKeepsQueue,
       voiceDucking,

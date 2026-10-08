@@ -6,6 +6,7 @@ import {
   type TS3VoiceActivity,
   type TS3VoiceSendFailure,
 } from "../ts-protocol/client.js";
+import { LocalAudioOutput } from "../audio/local-output.js";
 import { AudioPlayer } from "../audio/player.js";
 import { PlayQueue, PlayMode, type QueuedSong } from "../audio/queue.js";
 import type { MusicProvider, Platform, Song } from "../music/provider.js";
@@ -112,6 +113,8 @@ export interface BotInstanceOptions {
   bilibiliProvider: MusicProvider;
   youtubeProvider: MusicProvider;
   localProvider?: MusicProvider;
+  /** When enabled, play PCM on the host speaker instead of TeamSpeak UDP. */
+  localAudioOutput?: boolean;
   kugouProvider?: MusicProvider;
   spotifyProvider?: MusicProvider;
   jellyfinProvider?: MusicProvider;
@@ -160,8 +163,8 @@ export class BotInstance extends EventEmitter {
 
   private tsClient: TS3Client;
   private player: AudioPlayer;
+  private localAudioOutput: LocalAudioOutput | null;
   private voiceDucking: VoiceDuckingController;
-  private managedVoiceClients: ManagedVoiceClientRegistry;
   private readonly configuredVoiceServerScope: ManagedVoiceClientScope;
   private voiceServerScope: ManagedVoiceClientScope;
   private registeredVoiceClientId = 0;
@@ -182,6 +185,7 @@ export class BotInstance extends EventEmitter {
   private config: BotConfig;
   private logger: Logger;
   private avatarStore: AvatarStore;
+  private managedVoiceClients: ManagedVoiceClientRegistry;
   private connected = false;
   /** Fences async work and timers from earlier TeamSpeak connections. */
   private lifecycleGeneration = 0;
@@ -228,9 +232,9 @@ export class BotInstance extends EventEmitter {
     this.config = options.config;
     this.logger = options.logger.child({ botId: this.id });
     this.avatarStore = options.avatarStore;
-
     this.tsClient = new TS3Client(options.tsOptions, this.logger);
     this.player = new AudioPlayer(this.logger);
+    this.localAudioOutput = options.localAudioOutput ? new LocalAudioOutput(this.logger) : null;
     this.voiceDucking = new VoiceDuckingController(
       this.player,
       this.config.voiceDucking ?? { enabled: false, volumePercent: 30 },
@@ -329,16 +333,17 @@ export class BotInstance extends EventEmitter {
   }
 
   private setupPlayerEvents(): void {
+    this.player.on("pcm", (pcmFrame: Buffer) => {
+      this.localAudioOutput?.write(pcmFrame);
+    });
     this.player.on("frame", (opusFrame: Buffer) => {
+      if (this.localAudioOutput) return;
       const result = this.tsClient.sendVoiceData(opusFrame);
-      // A terminal fault can outlive a pause, queue change, or URL recovery.
-      // Retry the actual send first so a repaired transport can clear it.
       if (result === "failed" && this.connected && this.player.getState() === "playing") {
         this.logger.warn("Voice transport is still failing; playback paused");
         this.cmdPause();
       }
     });
-
     this.player.on("trackEnd", () => {
       const endedSong = this.queue.current();
       const endedSession = this.player.getPlaybackSessionId();
@@ -349,8 +354,6 @@ export class BotInstance extends EventEmitter {
         })
         .then((resumed) => {
           if (resumed) return;
-          // A pending command may replace, stop, or restart the same queue
-          // song before this continuation. Only advance the session that ended.
           if (
             !this.connected ||
             this.queue.current() !== endedSong ||
@@ -468,13 +471,11 @@ export class BotInstance extends EventEmitter {
       this.spotifyController.stop();
       this.currentSourceIsSpotify = false;
       this.player.stop();
+      this.localAudioOutput?.stop();
       this.jellyfinReporter?.onStop();
       this.queue.clear();
       this.sweepLocalAudio("disconnected");
-      // A lifecycle change must not leave a stale auto-resume armed.
       this.autoPaused = false;
-      // Only emit externally once per lifecycle so clients don't see a
-      // duplicate "disconnected" after an explicit disconnect() call.
       if (this.disconnectEmitted) return;
       this.disconnectEmitted = true;
       this.emit("disconnected");
@@ -614,33 +615,25 @@ export class BotInstance extends EventEmitter {
     this.lifecycleGeneration++;
     this._cancelIdleTimer();
     this.disconnectEmitted = false;
+    if (this.localAudioOutput) {
+      this.connected = true;
+      this.localAudioOutput.start();
+      this.emit("connected");
+      void this.restoreQueueFromSnapshot();
+      return;
+    }
     await this.tsClient.connect();
     const resolvedEndpoint = this.tsClient.getResolvedVoiceEndpoint();
     this.voiceServerScope = {
-      host:
-        resolvedEndpoint?.host ?? this.configuredVoiceServerScope.host,
-      voicePort:
-        resolvedEndpoint?.port ?? this.configuredVoiceServerScope.voicePort,
+      host: resolvedEndpoint?.host ?? this.configuredVoiceServerScope.host,
+      voicePort: resolvedEndpoint?.port ?? this.configuredVoiceServerScope.voicePort,
     };
-    // Race guard: if disconnect() was called while the handshake was
-    // awaiting, don't flip connected back to true — that would leave the
-    // bot in an inconsistent state (externally "connected" but the tsClient
-    // has already been torn down).
-    if (this.disconnectEmitted) {
-      throw new Error("Connect aborted by concurrent disconnect");
-    }
+    if (this.disconnectEmitted) throw new Error("Connect aborted by concurrent disconnect");
     this.connected = true;
-    // Register only after the outer lifecycle race guard succeeds. The TS
-    // wrapper emits its own "connected" event before connect() resolves, so
-    // registering in that callback could let a cancelled, late handshake
-    // overwrite a newer instance that reused the same client id.
     this.voiceDucking.reset(true);
     this.registerManagedVoiceClient();
     this.profileManager.onConnect();
     this.emit("connected");
-    // Feature 2 (#119): restore + resume the live queue persisted before the
-    // last shutdown. Best-effort and gated on savedQueuesEnabled; runs after
-    // the bot is fully connected so resolveAndPlay can actually push audio.
     void this.restoreQueueFromSnapshot();
   }
 
@@ -648,10 +641,6 @@ export class BotInstance extends EventEmitter {
     this.lifecycleGeneration++;
     this._cancelIdleTimer();
     this.voiceDucking.reset(true);
-    // Cancel any pending live-queue snapshot before clearing so it can't fire
-    // afterwards and persist an empty queue over the state we keep for restore
-    // (#119). The disconnected handler cancels too, but do it here as well for
-    // the path where tsClient.disconnect() doesn't re-emit "disconnected".
     if (this.snapshotTimer) {
       clearTimeout(this.snapshotTimer);
       this.snapshotTimer = null;
@@ -659,6 +648,7 @@ export class BotInstance extends EventEmitter {
     this.spotifyController.stop();
     this.currentSourceIsSpotify = false;
     this.player.stop();
+    this.localAudioOutput?.stop();
     this.jellyfinReporter?.onStop();
     this.queue.clear();
     this.sweepLocalAudio("disconnected");
@@ -667,10 +657,7 @@ export class BotInstance extends EventEmitter {
       this.disconnectEmitted = true;
       this.emit("disconnected");
     }
-    this.tsClient.disconnect();
-    // Stop outbound PCM and initiate the TeamSpeak disconnect before removing
-    // our id from the shared registry, minimizing the window in which another
-    // managed bot could mistake our final packet for a human speaker.
+    if (!this.localAudioOutput) this.tsClient.disconnect();
     this.unregisterManagedVoiceClient(MANAGED_VOICE_CLIENT_RELEASE_GRACE_MS);
   }
 
@@ -1021,7 +1008,7 @@ export class BotInstance extends EventEmitter {
     return requestedBy ? { ...song, requestedBy } : { ...song };
   }
 
-  /** Resolve URL for a song and start playing it. Skips to next if URL fails. */
+  /** Resolve URL for a song and start playing it. */
   async resolveAndPlay(song: QueuedSong): Promise<boolean> {
     if (!this.connected) {
       this.logger.warn({ songId: song.id, name: song.name }, "resolveAndPlay called on disconnected bot — skipping");

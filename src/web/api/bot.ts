@@ -69,9 +69,9 @@ export function createBotRouter(
   // NOTE: must be registered before "/:id" so it isn't shadowed by the param route.
   router.get("/settings", requireNotGuest, (_req, res) => {
     res.json({
-      idleTimeoutMinutes: config.idleTimeoutMinutes ?? 0,
       autoPauseOnEmpty: config.autoPauseOnEmpty,
       voiceDucking: config.voiceDucking,
+      localPlaybackEnabled: config.localPlaybackEnabled,
       localAudioEnabled: config.localAudioEnabled,
       savedQueuesEnabled: config.savedQueuesEnabled,
       playKeepsQueue: config.playKeepsQueue,
@@ -90,6 +90,7 @@ export function createBotRouter(
     const {
       idleTimeoutMinutes,
       autoPauseOnEmpty,
+      localPlaybackEnabled,
       localAudioEnabled,
       voiceDucking,
       guestMode,
@@ -103,12 +104,13 @@ export function createBotRouter(
     }
 
     const hasAutoPause = typeof autoPauseOnEmpty === "boolean";
+    const hasLocalPlaybackEnabled = typeof localPlaybackEnabled === "boolean";
     const hasLocalAudioEnabled = typeof localAudioEnabled === "boolean";
 
     if (hasIdle) config.idleTimeoutMinutes = idleTimeoutMinutes;
     if (hasAutoPause) config.autoPauseOnEmpty = autoPauseOnEmpty;
+    if (hasLocalPlaybackEnabled) config.localPlaybackEnabled = localPlaybackEnabled;
     if (hasLocalAudioEnabled) config.localAudioEnabled = localAudioEnabled;
-
     // Voice ducking is a partial settings block. Merge only known, strictly
     // valid fields so malformed JSON cannot replace the object or inject NaN /
     // out-of-range gain values into the live audio path.
@@ -279,6 +281,7 @@ export function createBotRouter(
     res.json({
       idleTimeoutMinutes: config.idleTimeoutMinutes ?? 0,
       autoPauseOnEmpty: config.autoPauseOnEmpty,
+      localPlaybackEnabled: config.localPlaybackEnabled,
       voiceDucking: config.voiceDucking,
       localAudioEnabled: config.localAudioEnabled,
       savedQueuesEnabled: config.savedQueuesEnabled,

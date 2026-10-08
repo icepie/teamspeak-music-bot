@@ -181,6 +181,8 @@ export function volumeToFactor(volume: number): number {
 
 export interface PlayerEvents {
   frame: (opusFrame: Buffer) => void;
+  /** Volume-adjusted 48 kHz stereo s16le frame for non-TeamSpeak outputs. */
+  pcm: (pcmFrame: Buffer) => void;
   trackEnd: () => void;
   error: (err: Error) => void;
 }
@@ -785,6 +787,7 @@ export class AudioPlayer extends EventEmitter {
 
     try {
       const adjusted = this.applyVolume(pcmFrame);
+      this.emit("pcm", adjusted);
       const opusFrame = this.encoder.encode(adjusted);
       this.emit("frame", opusFrame);
       this.framesPlayed++;
@@ -800,7 +803,9 @@ export class AudioPlayer extends EventEmitter {
 
   private emitSilenceFrame(): void {
     try {
-      const opusFrame = this.encoder.encode(Buffer.alloc(PCM_FRAME_BYTES));
+      const pcm = Buffer.alloc(PCM_FRAME_BYTES);
+      this.emit("pcm", pcm);
+      const opusFrame = this.encoder.encode(pcm);
       this.emit("frame", opusFrame);
       this.framesPlayed++;
     } catch (err) {

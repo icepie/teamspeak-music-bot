@@ -845,6 +845,18 @@
 
       <label class="profile-toggle behavior-toggle">
         <div class="profile-toggle-text">
+          <div class="profile-toggle-label">办公室本机音响播放</div>
+          <div class="profile-toggle-hint">开启后音乐从运行服务的电脑默认音响播放，不再连接 TeamSpeak。保存后需重启实例生效。</div>
+        </div>
+        <input
+          v-model="localPlaybackEnabled"
+          type="checkbox"
+          class="profile-toggle-switch"
+          @change="saveLocalPlaybackEnabled"
+        />
+      </label>
+      <label class="profile-toggle behavior-toggle">
+        <div class="profile-toggle-text">
           <div class="profile-toggle-label">本地音频播放</div>
           <div class="profile-toggle-hint">开启后允许在搜索页拖拽/选择本地音频上传并播放；关闭后会拒绝新的本地上传和本地歌曲播放请求。</div>
         </div>
@@ -1727,6 +1739,7 @@ const voiceDuckingMessage = ref('');
 const voiceDuckingMessageTone = ref<'ok' | 'warn'>('ok');
 let savedVoiceDucking = { enabled: false, volumePercent: 30 };
 let voiceDuckingRequestRevision = 0;
+const localPlaybackEnabled = ref(false);
 const localAudioEnabled = ref(true);
 // Saved-queues + play-keeps-queue toggles (#119), both default OFF.
 const savedQueuesEnabled = ref(false);
@@ -1768,6 +1781,7 @@ async function loadIdleTimeout() {
       voiceDuckingLoaded.value = true;
       voiceDuckingMessage.value = '';
     }
+    localPlaybackEnabled.value = res.data.localPlaybackEnabled ?? false;
     localAudioEnabled.value = res.data.localAudioEnabled ?? true;
     savedQueuesEnabled.value = res.data.savedQueuesEnabled ?? false;
     playKeepsQueue.value = res.data.playKeepsQueue ?? false;
@@ -1830,6 +1844,12 @@ async function saveLocalAudioEnabled() {
   try {
     const res = await axios.post('/api/bot/settings', { localAudioEnabled: localAudioEnabled.value });
     localAudioEnabled.value = res.data.localAudioEnabled ?? localAudioEnabled.value;
+  } catch { /* ignore */ }
+}
+async function saveLocalPlaybackEnabled() {
+  try {
+    const res = await axios.post('/api/bot/settings', { localPlaybackEnabled: localPlaybackEnabled.value });
+    localPlaybackEnabled.value = res.data.localPlaybackEnabled ?? localPlaybackEnabled.value;
   } catch { /* ignore */ }
 }
 
