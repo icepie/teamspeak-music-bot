@@ -145,7 +145,18 @@ async function main() {
     jellyfinProvider
   );
   await botManager.loadSavedBots();
-
+  // Office mode does not need a TeamSpeak server. Create one local player on
+  // first boot so the WebUI is usable immediately after the admin setup.
+  if (config.localPlaybackEnabled && botManager.getAllBots().length === 0) {
+    const officeBot = await botManager.createBot({
+      name: "办公室共享音响",
+      serverAddress: "local",
+      serverPort: 0,
+      nickname: "办公室播放器",
+      autoStart: false,
+    });
+    await botManager.startBot(officeBot.id);
+  }
   const webServer = createWebServer({
     port: config.webPort,
     botManager,
