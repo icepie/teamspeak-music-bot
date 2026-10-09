@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { MusicProvider } from "../../music/provider.js";
 import { YouTubeProvider } from "../../music/youtube.js";
+import { QQMusicProvider } from "../../music/qq.js";
 import type { CookieStore } from "../../music/auth.js";
 import type { Logger } from "../../logger.js";
 import type { BotConfig, JellyfinConfig } from "../../data/config.js";
@@ -47,10 +48,16 @@ export function createAuthRouter(
 
   router.post("/qrcode", requirePermission("platform.auth"), async (req, res) => {
     try {
-      const { platform } = req.body;
+      const { platform, loginType } = req.body;
+      if (loginType !== undefined && (platform !== "qq" || !["qq", "wechat", "app"].includes(loginType))) {
+        res.status(400).json({ error: "不支持的扫码登录方式" });
+        return;
+      }
       const provider = getProvider(platform);
-      const qr = await provider.getQrCode();
-      logger.info({ platform, key: qr.key }, "QR code generated");
+      const qr = provider instanceof QQMusicProvider
+        ? await provider.getQrCode(loginType ?? "qq")
+        : await provider.getQrCode();
+      logger.info({ platform, loginType }, "QR code generated");
       res.json(qr);
     } catch (err) {
       logger.error({ err }, "QR code generation failed");
@@ -58,16 +65,16 @@ export function createAuthRouter(
     }
   });
 
-  router.get("/qrcode/status", requireNotGuest, async (req, res) => {
+  router.get("/qrcode/status", requirePermission("platform.auth"), async (req, res) => {
     try {
       const { key, platform } = req.query;
-      if (!key) {
+      if (typeof key !== "string" || !key || typeof platform !== "string") {
         res.status(400).json({ error: "key is required" });
         return;
       }
       const provider = getProvider(platform as string);
       const status = await provider.checkQrCodeStatus(key as string);
-      logger.info({ platform, status, key }, "QR status check");
+      logger.debug({ platform, status }, "QR status check");
 
       // When confirmed, persist cookie
       if (status === "confirmed") {

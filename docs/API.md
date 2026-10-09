@@ -307,12 +307,14 @@ curl -X POST -H "X-API-Key: $KEY" -H "x-filename: theme.mp3" \
 | 方法 | 路径 | 权限 | 参数 | 返回 |
 |------|------|------|------|------|
 | GET | `/status` | 非游客 | `platform` | `{ platform, loggedIn, nickname?, avatarUrl? }` |
-| POST | `/qrcode` | `platform.auth` | `{ platform }`(netease/qq/bilibili/kugou) | `{ qrUrl, qrImg?(base64 data URL), key }` |
-| GET | `/qrcode/status` | 非游客 | `key`、`platform` | `{ status: "waiting"|"scanned"|"confirmed"|"expired" }`;confirmed 自动持久化登录态 |
+| POST | `/qrcode` | `platform.auth` | `{ platform, loginType? }`(netease/qq/bilibili/kugou)；仅 qq 支持 `loginType: "qq"(默认) | "wechat" | "app"` | `{ qrUrl, qrImg?(base64 data URL), key }` |
+| GET | `/qrcode/status` | `platform.auth` | `key`、`platform` | `{ status: "waiting"|"scanned"|"confirmed"|"expired" }`;confirmed 自动持久化登录态 |
 | POST | `/jellyfin/test` | `platform.auth` | `{ serverUrl?, authMode?, username?, password?, apiKey?, userId? }`(空字段回退已存配置) | `{ ok, serverName?, version?, error? }` |
 | POST | `/sms/send` | `platform.auth` | `{ phone }`(网易手机号登录) | `{ success }` |
 | POST | `/sms/verify` | `platform.auth` | `{ phone, code }` | `{ success }` |
 | POST | `/cookie` | `platform.auth` | `{ platform, cookie }`(不支持 youtube/jellyfin) | `{ success: true }` |
+
+QQ 音乐支持手机 QQ、微信、QQ 音乐 App 三种扫码方式，协议实现参考 qmtui。QQ 的 `key` 为服务端临时会话标识，五分钟后过期，重启后需重新生成；不要解析或记录此字段。微信状态请求可能长轮询，建议客户端超时至少 65 秒且不要并发轮询同一会话。App 二维码在实时订阅成功后返回；取消、网络及凭证交换失败通过 HTTP 错误返回，不代表已登录。登录后的账号权益由音乐平台决定。
 
 ## Spotify /api/spotify(配置 Spotify OAuth 后挂载)
 

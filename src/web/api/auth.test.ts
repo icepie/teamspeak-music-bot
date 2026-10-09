@@ -72,3 +72,31 @@ describe("auth router POST /jellyfin/test", () => {
     expect(testConnection).not.toHaveBeenCalled();
   });
 });
+
+describe("QR login authorization", () => {
+  function mount(user: unknown) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { Object.assign(req, { user }); next(); });
+    app.use("/api/auth", createAuthRouter(
+      fakeProvider("netease"), fakeProvider("qq"), fakeProvider("bilibili"),
+      pino({ level: "silent" }),
+    ));
+    return app;
+  }
+
+  it("does not let a member without platform.auth finalize a shared login", async () => {
+    const app = mount({ role: "member", capabilities: new Set([]) });
+    const response = await request(app).get("/api/auth/qrcode/status?platform=qq&key=session");
+    expect(response.status).toBe(403);
+  });
+
+  it.each([
+    { platform: "qq", loginType: "unknown" },
+    { platform: "netease", loginType: "wechat" },
+    { platform: "qq", loginType: ["wechat"] },
+  ])("rejects unsupported login selection %j", async (body) => {
+    const response = await request(mount({ role: "admin" })).post("/api/auth/qrcode").send(body);
+    expect(response.status).toBe(400);
+  });
+});

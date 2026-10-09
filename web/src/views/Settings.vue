@@ -301,7 +301,7 @@
           <button
             class="login-btn"
             :class="{ active: neteaseLoginMode === 'cookie' }"
-            @click="neteaseLoginMode = 'cookie'"
+            @click="startCookieLogin('netease')"
           >
             <Icon icon="mdi:cookie" />
             Cookie登录
@@ -344,6 +344,7 @@
           />
           <button class="btn-primary btn-save" @click="saveCookie('netease')">保存Cookie</button>
         </div>
+        <p v-if="neteaseQr.error" class="spotify-message tone-warn" role="alert">{{ neteaseQr.error }}</p>
       </div>
 
       <!-- QQ Music -->
@@ -360,18 +361,21 @@
 
         <div class="login-methods">
           <button
+            v-for="method in qqLoginMethods"
+            :key="method.value"
             class="login-btn"
-            :class="{ active: qqLoginMode === 'qr' }"
-            @click="startQrLogin('qq')"
-            :disabled="qqQr.loading"
+            :class="{ active: qqLoginMode === 'qr' && qqLoginType === method.value }"
+            :aria-pressed="qqLoginMode === 'qr' && qqLoginType === method.value"
+            @click="startQrLogin('qq', method.value)"
+            :disabled="qqQr.loading && qqLoginType === method.value"
           >
-            <Icon icon="mdi:qrcode" />
-            扫码登录
+            <Icon :icon="method.icon" />
+            {{ method.label }}扫码
           </button>
           <button
             class="login-btn"
             :class="{ active: qqLoginMode === 'cookie' }"
-            @click="qqLoginMode = 'cookie'"
+            @click="startCookieLogin('qq')"
           >
             <Icon icon="mdi:cookie" />
             Cookie登录
@@ -388,7 +392,7 @@
             <img :src="qqQr.dataUrl" class="qr-image" alt="QR Code" />
             <div class="qr-status" :class="qqQr.status">
               <template v-if="qqQr.status === 'waiting'">
-                <Icon icon="mdi:cellphone" /> 请使用手机QQ扫码
+                <Icon icon="mdi:cellphone" /> {{ qqScanHint }}
               </template>
               <template v-else-if="qqQr.status === 'scanned'">
                 <Icon icon="mdi:check" /> 已扫码，请在手机上确认
@@ -414,6 +418,7 @@
           />
           <button class="btn-primary btn-save" @click="saveCookie('qq')">保存Cookie</button>
         </div>
+        <p v-if="qqQr.error" class="spotify-message tone-warn" role="alert">{{ qqQr.error }}</p>
       </div>
       <!-- BiliBili -->
       <div v-if="providerOn('bilibili')" class="account-card">
@@ -440,7 +445,7 @@
           <button
             class="login-btn"
             :class="{ active: bilibiliLoginMode === 'cookie' }"
-            @click="bilibiliLoginMode = 'cookie'"
+            @click="startCookieLogin('bilibili')"
           >
             <Icon icon="mdi:cookie" />
             Cookie登录
@@ -483,6 +488,7 @@
           />
           <button class="btn-primary btn-save" @click="saveCookie('bilibili')">保存Cookie</button>
         </div>
+        <p v-if="bilibiliQr.error" class="spotify-message tone-warn" role="alert">{{ bilibiliQr.error }}</p>
       </div>
 
       <!-- Kugou -->
@@ -510,7 +516,7 @@
           <button
             class="login-btn"
             :class="{ active: kugouLoginMode === 'cookie' }"
-            @click="kugouLoginMode = 'cookie'"
+            @click="startCookieLogin('kugou')"
           >
             <Icon icon="mdi:cookie" />
             Cookie登录
@@ -553,6 +559,7 @@
           />
           <button class="btn-primary btn-save" @click="saveCookie('kugou')">保存Cookie</button>
         </div>
+        <p v-if="kugouQr.error" class="spotify-message tone-warn" role="alert">{{ kugouQr.error }}</p>
       </div>
     </section>
 
@@ -1334,6 +1341,16 @@ const qqLoginMode = ref<'qr' | 'cookie' | null>(null);
 const bilibiliLoginMode = ref<'qr' | 'cookie' | null>(null);
 const kugouLoginMode = ref<'qr' | 'cookie' | null>(null);
 
+type QrPlatform = 'netease' | 'qq' | 'bilibili' | 'kugou';
+type QqLoginType = 'qq' | 'wechat' | 'app';
+const qqLoginType = ref<QqLoginType>('qq');
+const qqLoginMethods = [
+  { value: 'qq', label: 'QQ', icon: 'mdi:qqchat', hint: '请使用手机QQ扫码' },
+  { value: 'wechat', label: '微信', icon: 'mdi:wechat', hint: '请使用微信扫码' },
+  { value: 'app', label: 'QQ音乐 App', icon: 'mdi:music-circle-outline', hint: '请使用QQ音乐官方App扫码' },
+] as const;
+const qqScanHint = computed(() => qqLoginMethods.find((method) => method.value === qqLoginType.value)!.hint);
+
 // Auth status
 const neteaseAuth = reactive({ loggedIn: false, nickname: '', avatarUrl: '' });
 const qqAuth = reactive({ loggedIn: false, nickname: '', avatarUrl: '' });
@@ -1498,23 +1515,25 @@ interface QrState {
   dataUrl: string;
   key: string;
   status: 'waiting' | 'scanned' | 'confirmed' | 'expired';
-  pollTimer: ReturnType<typeof setInterval> | null;
+  error: string;
+  pollTimer: ReturnType<typeof setTimeout> | null;
+  controller: AbortController | null;
 }
 
 const neteaseQr = reactive<QrState>({
-  loading: false, dataUrl: '', key: '', status: 'waiting', pollTimer: null,
+  loading: false, dataUrl: '', key: '', status: 'waiting', error: '', pollTimer: null, controller: null,
 });
 const qqQr = reactive<QrState>({
-  loading: false, dataUrl: '', key: '', status: 'waiting', pollTimer: null,
+  loading: false, dataUrl: '', key: '', status: 'waiting', error: '', pollTimer: null, controller: null,
 });
 const bilibiliQr = reactive<QrState>({
-  loading: false, dataUrl: '', key: '', status: 'waiting', pollTimer: null,
+  loading: false, dataUrl: '', key: '', status: 'waiting', error: '', pollTimer: null, controller: null,
 });
 const kugouQr = reactive<QrState>({
-  loading: false, dataUrl: '', key: '', status: 'waiting', pollTimer: null,
+  loading: false, dataUrl: '', key: '', status: 'waiting', error: '', pollTimer: null, controller: null,
 });
 
-function getQrState(platform: string): QrState {
+function getQrState(platform: QrPlatform): QrState {
   if (platform === 'bilibili') return bilibiliQr;
   if (platform === 'kugou') return kugouQr;
   return platform === 'netease' ? neteaseQr : qqQr;
@@ -1540,71 +1559,118 @@ async function checkAuthStatus() {
   }
 }
 
-async function startQrLogin(platform: string) {
-  const qr = getQrState(platform);
-  if (platform === 'netease') neteaseLoginMode.value = 'qr';
-  else if (platform === 'bilibili') bilibiliLoginMode.value = 'qr';
-  else if (platform === 'kugou') kugouLoginMode.value = 'qr';
-  else qqLoginMode.value = 'qr';
+function getLoginMode(platform: QrPlatform) {
+  if (platform === 'netease') return neteaseLoginMode;
+  if (platform === 'bilibili') return bilibiliLoginMode;
+  if (platform === 'kugou') return kugouLoginMode;
+  return qqLoginMode;
+}
 
-  // Stop existing poll
-  if (qr.pollTimer) clearInterval(qr.pollTimer);
+function stopQrLogin(qr: QrState) {
+  if (qr.pollTimer) clearTimeout(qr.pollTimer);
+  qr.pollTimer = null;
+  qr.controller?.abort();
+  qr.controller = null;
+  qr.loading = false;
+}
+
+function isCurrentLogin(qr: QrState, controller: AbortController) {
+  return qr.controller === controller && !controller.signal.aborted;
+}
+
+function loginErrorMessage(err: unknown, fallback: string): string {
+  if (axios.isAxiosError(err)) {
+    const message = err.response?.data?.error ?? err.response?.data?.message;
+    if (typeof message === 'string' && message) return message;
+  }
+  return err instanceof Error ? `${fallback}：${err.message}` : fallback;
+}
+
+function startCookieLogin(platform: QrPlatform) {
+  const qr = getQrState(platform);
+  stopQrLogin(qr);
+  qr.error = '';
+  getLoginMode(platform).value = 'cookie';
+}
+
+async function refreshLoginAuth(platform: QrPlatform, controller: AbortController) {
+  const res = await axios.get('/api/auth/status', {
+    params: { platform }, signal: controller.signal, timeout: 60000,
+  });
+  if (!isCurrentLogin(getQrState(platform), controller)) return;
+  const auth = platform === 'netease' ? neteaseAuth
+    : platform === 'bilibili' ? bilibiliAuth
+    : platform === 'kugou' ? kugouAuth : qqAuth;
+  Object.assign(auth, res.data);
+}
+
+async function startQrLogin(platform: QrPlatform, loginType: QqLoginType = qqLoginType.value) {
+  const qr = getQrState(platform);
+  stopQrLogin(qr);
+  getLoginMode(platform).value = 'qr';
+  if (platform === 'qq') qqLoginType.value = loginType;
+  const controller = new AbortController();
+  qr.controller = controller;
   qr.loading = true;
   qr.dataUrl = '';
+  qr.key = '';
+  qr.error = '';
   qr.status = 'waiting';
 
   try {
-    const res = await axios.post('/api/auth/qrcode', { platform });
+    const res = await axios.post('/api/auth/qrcode',
+      platform === 'qq' ? { platform, loginType } : { platform },
+      { signal: controller.signal, timeout: 60000 },
+    );
+    if (!isCurrentLogin(qr, controller)) return;
     const { qrUrl, qrImg, key } = res.data;
+
+    // QR codes must stay dark-on-light, including in dark mode: some app
+    // scanners cannot decode inverted codes. Prefer the server image.
+    const dataUrl = qrImg || await QRCode.toDataURL(qrUrl, {
+      width: 200,
+      margin: 2,
+      color: { dark: '#000000', light: '#ffffff' },
+    });
+    if (!isCurrentLogin(qr, controller)) return;
     qr.key = key;
-
-    // Use server-generated QR image if available, otherwise generate client-side
-    if (qrImg) {
-      qr.dataUrl = qrImg;
-    } else {
-      // QR codes must be dark-on-light to stay scannable. Do NOT invert the
-      // colours for the dark theme: many in-app scanners (notably the Kugou
-      // music app) cannot decode a light-on-dark QR, so a themed code looks
-      // fine on screen but silently fails to scan. The white quiet-zone frames
-      // it cleanly in dark mode anyway.
-      qr.dataUrl = await QRCode.toDataURL(qrUrl, {
-        width: 200,
-        margin: 2,
-        color: { dark: '#000000', light: '#ffffff' },
-      });
-    }
-
-    qr.loading = false;
-
-    // Start polling
-    qr.pollTimer = setInterval(() => pollQrStatus(platform), 2000);
+    qr.dataUrl = dataUrl;
+    qr.pollTimer = setTimeout(() => { void pollQrStatus(platform, controller); }, 2000);
   } catch (err) {
-    qr.loading = false;
-    console.error('QR generation failed:', err);
+    if (isCurrentLogin(qr, controller)) {
+      qr.error = loginErrorMessage(err, '生成二维码失败，请重试');
+    }
+  } finally {
+    if (isCurrentLogin(qr, controller)) qr.loading = false;
   }
 }
 
-async function pollQrStatus(platform: string) {
+async function pollQrStatus(platform: QrPlatform, controller: AbortController) {
   const qr = getQrState(platform);
-  if (!qr.key) return;
+  if (!isCurrentLogin(qr, controller) || !qr.key) return;
+  qr.pollTimer = null;
 
   try {
     const res = await axios.get('/api/auth/qrcode/status', {
       params: { key: qr.key, platform },
+      signal: controller.signal,
+      // WeChat holds a status request open for about 40 seconds.
+      timeout: 65000,
     });
+    if (!isCurrentLogin(qr, controller)) return;
     qr.status = res.data.status;
 
     if (qr.status === 'confirmed') {
-      if (qr.pollTimer) clearInterval(qr.pollTimer);
-      qr.pollTimer = null;
-      // Refresh auth status
-      await checkAuthStatus();
-    } else if (qr.status === 'expired') {
-      if (qr.pollTimer) clearInterval(qr.pollTimer);
-      qr.pollTimer = null;
+      await refreshLoginAuth(platform, controller);
+    } else if (qr.status !== 'expired') {
+      // Schedule only after the previous long poll settles, never overlap it.
+      qr.pollTimer = setTimeout(() => { void pollQrStatus(platform, controller); }, 2000);
     }
-  } catch {
-    // Ignore poll errors
+  } catch (err) {
+    if (isCurrentLogin(qr, controller)) {
+      qr.error = loginErrorMessage(err, '查询登录状态失败，请重新扫码');
+      if (qr.status !== 'confirmed') qr.dataUrl = '';
+    }
   }
 }
 
@@ -1706,16 +1772,23 @@ async function toggleBot(botId: string, connected: boolean) {
   }
 }
 
-async function saveCookie(platform: string) {
+async function saveCookie(platform: QrPlatform) {
   const cookie = platform === 'bilibili' ? bilibiliCookie.value
     : platform === 'kugou' ? kugouCookie.value
     : platform === 'netease' ? neteaseCookie.value : qqCookie.value;
   if (!cookie) return;
+  startCookieLogin(platform);
+  const qr = getQrState(platform);
+  const controller = new AbortController();
+  qr.controller = controller;
   try {
-    await axios.post('/api/auth/cookie', { platform, cookie });
-    await checkAuthStatus();
-  } catch {
-    // Ignore
+    await axios.post('/api/auth/cookie', { platform, cookie }, {
+      signal: controller.signal, timeout: 60000,
+    });
+    if (!isCurrentLogin(qr, controller)) return;
+    await refreshLoginAuth(platform, controller);
+  } catch (err) {
+    if (isCurrentLogin(qr, controller)) qr.error = loginErrorMessage(err, '保存Cookie失败');
   }
 }
 
@@ -2521,10 +2594,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  if (neteaseQr.pollTimer) clearInterval(neteaseQr.pollTimer);
-  if (qqQr.pollTimer) clearInterval(qqQr.pollTimer);
-  if (bilibiliQr.pollTimer) clearInterval(bilibiliQr.pollTimer);
-  if (kugouQr.pollTimer) clearInterval(kugouQr.pollTimer);
+  for (const qr of [neteaseQr, qqQr, bilibiliQr, kugouQr]) stopQrLogin(qr);
 });
 </script>
 
@@ -2689,6 +2759,7 @@ onUnmounted(() => {
 
 .login-methods {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 16px;
 }

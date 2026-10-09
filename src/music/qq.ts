@@ -16,6 +16,8 @@ import type {
 } from "./provider.js";
 import { parseLyrics } from "./netease.js";
 
+import { QQQrAuth, type QQLoginType } from "./qq-auth.js";
+
 // Primary search client: u.y.qq.com/cgi-bin/musicu.fcg (JSON sub-request
 // batch). Was broken ca. 2026-05 due to two upstream API changes:
 //   1. searchid param must NOT be present (causes all lists to be empty)
@@ -174,7 +176,7 @@ export class QQMusicProvider implements MusicProvider {
   private cookie = "";
   private quality = "exhigh";
   private radarPage = 1;
-
+  private readonly qrAuth = new QQQrAuth();
   constructor(baseUrl: string) {
     this.api = axios.create({
       baseURL: baseUrl,
@@ -198,6 +200,54 @@ export class QQMusicProvider implements MusicProvider {
     return this.cookie ? { Cookie: this.cookie } : {};
   }
 
+  private get musicCredentials(): { uin: string; key: string; loginType: number } {
+    const values = Object.fromEntries(this.cookie.split(/;\s*/).map(part => {
+      const at = part.indexOf("=");
+      return [part.slice(0, at), part.slice(at + 1)];
+    }));
+    return {
+      uin: (values.musicid || values.uin || values.qqmusic_uin || "0").replace(/^o0*/, ""),
+      key: values.qm_keyst || values.qqmusic_key || "",
+      loginType: Number(values.tmeLoginType || 0),
+    };
+  }
+
+  private get appComm(): Record<string, unknown> | undefined {
+    const { uin, key, loginType } = this.musicCredentials;
+    if ((loginType !== 1 && loginType !== 6) || !key || uin === "0") return undefined;
+    return { ct: 11, cv: 14090008, v: 14090008, chid: "10003505",
+      tmeAppID: "qqmusic", tmeLoginType: loginType, uin, qq: uin, authst: key };
+  }
+
+  /** The sidecar omits tmeLoginType; app/WeChat sessions use Musicu directly. */
+  private async appPlayUrls(songIds: string[], quality: string): Promise<Record<string, SongUrlResult>> {
+    const formats: Record<string, [string, string]> = {
+      standard: ["M500", ".mp3"], high: ["M800", ".mp3"], exhigh: ["M800", ".mp3"],
+      lossless: ["F000", ".flac"], hires: ["RS01", ".flac"],
+      "128": ["M500", ".mp3"], "320": ["M800", ".mp3"], flac: ["F000", ".flac"],
+      m4a: ["C400", ".m4a"], ape: ["A000", ".ape"],
+    };
+    const [prefix, suffix] = formats[quality] ?? formats.exhigh;
+    const { uin, key } = this.musicCredentials;
+    const body = this.buildMusicuPayload("vkey.GetVkeyServer", "CgiGetVkey", {
+      guid: "10000", songmid: songIds, songtype: songIds.map(() => 0),
+      uin, authst: key, loginflag: 1, platform: "20",
+      filename: songIds.map(id => `${prefix}${id}${id}${suffix}`),
+    });
+    const res = await qqMusicuApi.post<{ code?: number; req_0?: { code?: number; data?: {
+      sip?: string[]; midurlinfo?: Array<{ songmid?: string; purl?: string; isTryout?: number; tryBegin?: number; tryEnd?: number }>;
+    } } }>("/cgi-bin/musicu.fcg", body, { headers: this.directCookieHeaders });
+    if ((res.data.code !== undefined && res.data.code !== 0) || res.data.req_0?.code !== 0) throw new Error("QQ Music playback request failed");
+    const data = res.data.req_0.data;
+    const base = data?.sip?.find(value => /^https?:\/\//.test(value));
+    const result: Record<string, SongUrlResult> = {};
+    if (!base) return result;
+    for (const item of data?.midurlinfo ?? []) {
+      if (item.songmid && item.purl) result[item.songmid] = { url: new URL(item.purl, base).href, trialDuration: parseQqTrial(item) };
+    }
+    return result;
+  }
+
   private buildMusicuPayload(module: string, method: string, param: Record<string, unknown>): Record<string, unknown> {
     const uinMatch = /(?:^|; )(?:uin|qqmusic_uin)=o?0?(\d+)/.exec(this.cookie);
     const pSkeyMatch = /(?:^|; )p_skey=([^;]+)/.exec(this.cookie);
@@ -213,6 +263,7 @@ export class QQMusicProvider implements MusicProvider {
         outCharset: "utf-8",
         notice: 0,
         need_new_code: 1,
+        ...this.appComm,
       },
       req_0: { module, method, param },
     };
@@ -352,6 +403,10 @@ export class QQMusicProvider implements MusicProvider {
   }
 
   async getSongUrl(songId: string, quality?: string): Promise<SongUrlResult | null> {
+    if (this.appComm) {
+      try { return (await this.appPlayUrls([songId], quality ?? this.quality))[songId] ?? null; }
+      catch { return null; }
+    }
     try {
       const res = await this.api.get("/getMusicPlay", {
         params: { songmid: songId, quality: quality ?? this.quality, ...this.cookieParams },
@@ -399,6 +454,12 @@ export class QQMusicProvider implements MusicProvider {
     for (let i = 0; i < songIds.length; i += CHUNK) {
       const slice = songIds.slice(i, i + CHUNK);
       try {
+        if (this.appComm) {
+          const urls = await this.appPlayUrls(slice, this.quality);
+          allChunksFailed = false;
+          for (const mid of Object.keys(urls)) playable.add(mid);
+          continue;
+        }
         const res = await this.api.get("/getMusicPlay", {
           params: { songmid: slice.join(","), quality: this.quality, ...this.cookieParams },
         });
@@ -767,57 +828,55 @@ export class QQMusicProvider implements MusicProvider {
     );
   }
 
-  async getQrCode(): Promise<QrCodeResult> {
-    // @sansenjian/qq-music-api 2.x returns { img, qrsig, ptqrtoken } via
-    // customResponse (no { response: ... } wrapping). /checkQQLoginQr
-    // requires BOTH qrsig AND ptqrtoken — passing only one gives a 400
-    // "参数错误". Pack both into the opaque `key` field so the polling
-    // endpoint can split them back out. Separator "|" is safe: QQ tokens
-    // are alphanumeric.
-    const res = await this.api.get("/getQQLoginQr");
-    const qrsig: string = res.data?.qrsig ?? "";
-    const ptqrtoken: string = String(res.data?.ptqrtoken ?? "");
-    return {
-      qrUrl: "",
-      qrImg: res.data?.img ?? "",
-      key: `${qrsig}|${ptqrtoken}`,
-    };
+  async getQrCode(loginType: QQLoginType = "qq"): Promise<QrCodeResult> {
+    return this.qrAuth.getQrCode(loginType, async () => {
+      try {
+        const res = await this.api.get("/getQQLoginQr");
+        return {
+          img: typeof res.data?.img === "string" ? res.data.img : undefined,
+          qrsig: typeof res.data?.qrsig === "string" ? res.data.qrsig : undefined,
+          ptqrtoken: typeof res.data?.ptqrtoken === "string" || typeof res.data?.ptqrtoken === "number" ? res.data.ptqrtoken : undefined,
+        };
+      } catch {
+        throw new Error("QQ Music login service unavailable");
+      }
+    });
   }
 
-  async checkQrCodeStatus(
-    key: string
-  ): Promise<"waiting" | "scanned" | "confirmed" | "expired"> {
-    const [qrsig, ptqrtoken] = key.split("|");
-    if (!qrsig || !ptqrtoken) return "expired";
-
-    // NOTE: /checkQQLoginQr is registered as POST only in
-    // @sansenjian/qq-music-api 2.x. GET returns 405 Method Not Allowed.
-    let res;
-    try {
-      res = await this.api.post("/checkQQLoginQr", null, {
-        params: { qrsig, ptqrtoken },
-      });
-    } catch {
-      return "expired";
+  async checkQrCodeStatus(key: string): Promise<"waiting" | "scanned" | "confirmed" | "expired"> {
+    const status = await this.qrAuth.checkQrCodeStatus(key, async ({ qrsig, ptqrtoken }) => {
+      let res;
+      try {
+        res = await this.api.post("/checkQQLoginQr", null, { params: { qrsig, ptqrtoken } });
+      } catch {
+        throw new Error("QQ Music login service unavailable");
+      }
+      const body: unknown = res.data;
+      if (!body || typeof body !== "object" || !("isOk" in body)) throw new Error("QQ Music login response was invalid");
+      if (body.isOk === true) {
+        const session = "session" in body ? body.session : undefined;
+        const cookie = session && typeof session === "object" && "cookie" in session ? session.cookie : undefined;
+        if (typeof cookie !== "string" || !cookie) throw new Error("QQ Music login response was incomplete");
+        return { status: "confirmed", cookie };
+      }
+      if (body.isOk !== false || !("refresh" in body) || typeof body.refresh !== "boolean") throw new Error("QQ Music login response was invalid");
+      if (body.refresh) return { status: "expired" };
+      const message = "message" in body && typeof body.message === "string" ? body.message : "";
+      if (message.includes("已扫码") || message.includes("已扫描")) return { status: "scanned" };
+      if (message.includes("未扫描")) return { status: "waiting" };
+      throw new Error("QQ Music login was rejected");
+    });
+    if (status === "confirmed") {
+      const cookie = this.qrAuth.consumeCookie(key);
+      if (cookie) this.setCookie(cookie);
     }
-
-    // customResponse shape:
-    //   success:  { isOk: true, message: '登录成功', session: { cookie, ... } }
-    //   scanning: { isOk: false, refresh: false, message: '未扫描二维码' }
-    //   expired:  { isOk: false, refresh: true,  message: '二维码已失效' }
-    const body = res.data;
-    if (body?.isOk === true) {
-      const cookie: string = body.session?.cookie ?? "";
-      if (cookie) this.cookie = cookie;
-      return "confirmed";
-    }
-    if (body?.refresh === true) return "expired";
-    if (typeof body?.message === "string" && body.message.includes("未扫描"))
-      return "waiting";
-    return "waiting";
+    return status;
   }
+
+  dispose(): void { this.qrAuth.dispose(); }
 
   setCookie(cookie: string): void {
+    this.qrAuth.supersede();
     this.cookie = cookie;
     // Reset radar pagination so a re-login (different account) starts from the
     // first page rather than inheriting the previous account's cursor.
@@ -830,6 +889,22 @@ export class QQMusicProvider implements MusicProvider {
 
   async getAuthStatus(): Promise<AuthStatus> {
     if (!this.cookie) return { loggedIn: false };
+    if (this.appComm) {
+      const { uin } = this.musicCredentials;
+      try {
+        const res = await qqMusicuApi.post<{ code?: number; req_0?: { code?: number; data?: {
+          Info?: { BaseInfo?: { Name?: string; Avatar?: string } };
+        } }; vip?: { code?: number; data?: { identity?: unknown } } }>("/cgi-bin/musicu.fcg", {
+          ...this.buildMusicuPayload("music.UnifiedHomepage.UnifiedHomepageSrv", "GetHomepageHeader", { uin, IsQueryTabDetail: 1 }),
+          vip: { module: "VipLogin.VipLoginInter", method: "vip_login_base", param: {} },
+        }, { headers: this.directCookieHeaders });
+        const profile = res.data.req_0;
+        const info = profile?.data?.Info?.BaseInfo;
+        if ((res.data.code !== undefined && res.data.code !== 0) || profile?.code !== 0 || !info ||
+          res.data.vip?.code !== 0 || !res.data.vip.data?.identity) return { loggedIn: false };
+        return { loggedIn: true, nickname: info.Name || `QQ Music ${uin}`, avatarUrl: httpsImage(info.Avatar) || undefined };
+      } catch { return { loggedIn: false }; }
+    }
     // /getUserAvatar in @sansenjian/qq-music-api 2.x is NOT registered on
     // the main router; the real endpoint is /user/getUserAvatar, and even
     // that just builds a static URL from a uin without validating the

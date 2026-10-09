@@ -26,6 +26,16 @@
 
 > v1.10.0 新增**可选**的 [Jellyfin](https://jellyfin.org/) 音源（由 [@ItsEricRao](https://github.com/ItsEricRao) 在 [PR #123](https://github.com/ZHANGTIANYAO1/teamspeak-music-bot/pull/123) 中贡献）：连接自建 Jellyfin 服务器直接播放你自己的音乐库。默认关闭，在 **设置 → Jellyfin 音乐库** 一键开启；原有在线音源保持默认启用，行为不变。
 
+## 办公室共享音响（此 fork）
+
+`data/config.json` 中启用 `localPlaybackEnabled: true`，音乐通过运行服务的用户会话中的 `pw-play` 输出到默认 PipeWire 音响，不连接 TeamSpeak。`localAudioEnabled` 控制上传文件，与在线音源开关独立；网易云和 QQ 在线点歌需要 `enabledProviders` 包含 `netease`、`qq`。
+
+办公室部署地址为 `http://192.168.1.44:3010`，用户服务为 `tsmusicbot-office.service`。首次访问创建网页管理员；音乐平台账号在「设置 → 音乐账号」单独登录。
+
+QQ 音乐登录支持「QQ扫码」「微信扫码」「QQ音乐 App扫码」，分别使用对应手机 App 扫描并确认。微信及 App 登录协议参考 qmtui；取消或过期后重新生成二维码即可。音乐账号为该服务的共享账号，会员与版权权限以平台实际返回为准。
+
+解码优先使用服务 `PATH` 中的 `ffmpeg`。Linux Mint 22.3 上曾遇到 FFmpeg 7.0.2 静态包播放网络音乐时 `SIGSEGV`；该部署已改用发行版 FFmpeg 6.1.1（依赖已安装的系统 libav 库），二进制位于 `/home/ly/teamspeak-music-bot/ffmpeg`。更新应用时保留该文件、`data/` 和用户服务配置，不要用静态包覆盖。
+
 ## 功能特性
 
 - **WebUI 鉴权与细粒度权限（必选）** — 用户名 + 密码登录，多用户、两种角色（管理员 / 成员）；成员可进一步配置**细粒度能力**（播放控制 / 队列管理 / 机器人管理 / 平台登录 / 音质）和**按机器人授权白名单**，所有变更操作由后端逐请求强制校验。bcrypt 加密、HttpOnly 会话 Cookie，CSRF 防护，WebSocket 同样鉴权。首次访问引导创建管理员。从无鉴权旧版本升级时请参阅 [更新升级](#更新升级) 章节
