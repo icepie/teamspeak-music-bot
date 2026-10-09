@@ -34,7 +34,7 @@
 
 QQ 音乐登录支持「QQ扫码」「微信扫码」「QQ音乐 App扫码」，分别使用对应手机 App 扫描并确认。微信及 App 登录协议参考 qmtui；取消或过期后重新生成二维码即可。音乐账号为该服务的共享账号，会员与版权权限以平台实际返回为准。
 
-解码优先使用服务 `PATH` 中的 `ffmpeg`。Linux Mint 22.3 上曾遇到 FFmpeg 7.0.2 静态包播放网络音乐时 `SIGSEGV`；该部署已改用发行版 FFmpeg 6.1.1（依赖已安装的系统 libav 库），二进制位于 `/home/ly/teamspeak-music-bot/ffmpeg`。更新应用时保留该文件、`data/` 和用户服务配置，不要用静态包覆盖。
+解码优先使用服务 `PATH` 中的 `ffmpeg`。办公室 Linux Mint 主机上曾遇到 FFmpeg 7.0.2 静态包播放网络音乐时 `SIGSEGV`；该部署已改用发行版 FFmpeg 6.1.1（依赖已安装的系统 libav 库），二进制位于 `/home/ly/teamspeak-music-bot/ffmpeg`。更新应用时保留该文件、`data/` 和用户服务配置，不要用静态包覆盖。
 
 ## 功能特性
 
